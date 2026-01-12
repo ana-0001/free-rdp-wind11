@@ -1,4 +1,4 @@
-name: RDP Access via Tailscale
+name: RDP
 
 # هذا الـ Workflow سيعمل يدويًا من واجهة GitHub Actions
 on:
@@ -28,7 +28,7 @@ jobs:
         run: |
           Write-Host "Enabling Remote Desktop and configuring security layers..."
           # 1. تمكين Remote Desktop
-          Set-ItemProperty -Path 'HKLM:\System\CurrentSet\Control\Terminal Server' `
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
                              -Name "fDenyTSConnections" -Value 0 -Force
 
           # 2. تفعيل NLA (Network Level Authentication) - موصى به للأمان
