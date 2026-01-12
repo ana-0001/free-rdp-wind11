@@ -1,113 +1,227 @@
 name: RDP
 
 on:
+  # يسمح بتشغيل Workflow يدويًا من واجهة GitHub Actions
   workflow_dispatch:
+    inputs:
+      rdp_username:
+        description: 'Username for RDP access (default: RDP)'
+        required: false
+        default: 'RDP'
+      rdp_password:
+        description: 'Password for RDP access (leave empty for a strong random password)'
+        required: false
+        default: ''
+      tailscale_hostname_prefix:
+        description: 'Prefix for Tailscale hostname (e.g., gh-runner will be gh-runner-<run_id>)'
+        required: false
+        default: 'gh-runner'
 
 jobs:
-  secure-rdp:
+  secure-rdp-session:
     runs-on: windows-latest
+    # يحدد أقصى وقت للتشغيل. 3600 دقيقة (60 ساعة) كافية لجلسة RDP طويلة.
     timeout-minutes: 3600
 
+    env:
+      TAILSCALE_VERSION: "latest" # يمكن تحديث هذا لاحقًا ليجلب أحدث إصدار ديناميكيًا إذا لزم الأمر
+
     steps:
-      - name: Configure Core RDP Settings
+      - name: Configure Secure RDP Settings
         run: |
-          # Enable Remote Desktop and disable Network Level Authentication (if needed)
+          Write-Host "Enabling Remote Desktop and configuring security layers..."
+          # 1. تمكين Remote Desktop
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
                              -Name "fDenyTSConnections" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-                             -Name "UserAuthentication" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-                             -Name "SecurityLayer" -Value 0 -Force
 
-          # Remove any existing rule with the same name to avoid duplication
-          netsh advfirewall firewall delete rule name="RDP-Tailscale"
-          
-          # For testing, allow any incoming connection on port 3389
-          netsh advfirewall firewall add rule name="RDP-Tailscale" `
-            dir=in action=allow protocol=TCP localport=3389
+          # 2. تفعيل NLA (Network Level Authentication) - موصى به للأمان
+          # يتطلب هذا أن يقوم عميل RDP بالمصادقة قبل إنشاء جلسة RDP كاملة.
+          # إذا واجهت مشاكل في الاتصال، يمكنك تغيير القيمة إلى 0 لتعطيل NLA،
+          # ولكن هذا يقلل بشكل كبير من الأمان.
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+                             -Name "UserAuthentication" -Value 1 -Force # 1 = Enabled (Recommended)
 
-          # (Optional) Restart the Remote Desktop service to ensure changes take effect
+          # 3. تفعيل SSL/TLS لطبقة أمان RDP - موصى به بشدة للتشفير
+          # 0 = Negotiate (Default), 1 = RDP Security Layer, 2 = SSL/TLS Security Layer (Recommended)
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+                             -Name "SecurityLayer" -Value 2 -Force # 2 = SSL/TLS (Recommended)
+
+          Write-Host "Configuring Windows Firewall for RDP..."
+          # إزالة أي قاعدة موجودة بنفس الاسم لتجنب الازدواجية
+          # استخدام -ErrorAction SilentlyContinue لتجنب الفشل إذا لم تكن القاعدة موجودة
+          Remove-NetFirewallRule -DisplayName "RDP-Tailscale" -ErrorAction SilentlyContinue
+
+          # إضافة قاعدة جدار حماية للسماح باتصالات RDP الواردة على المنفذ الافتراضي (3389)
+          New-NetFirewallRule -DisplayName "RDP-Tailscale" `
+                              -Direction Inbound `
+                              -Action Allow `
+                              -Protocol TCP `
+                              -LocalPort 3389 `
+                              -Description "Allow RDP traffic for Tailscale connection"
+
+          Write-Host "Restarting Remote Desktop Service..."
+          # إعادة تشغيل خدمة RDP لضمان تطبيق التغييرات
           Restart-Service -Name TermService -Force
 
-      - name: Create RDP User with Secure Password
+      - name: Create or Update RDP User Account
+        id: create_user
         run: |
-          Add-Type -AssemblyName System.Security
-          $charSet = @{
-              Upper   = [char[]](65..90)      # A-Z
-              Lower   = [char[]](97..122)     # a-z
-              Number  = [char[]](48..57)      # 0-9
-              Special = ([char[]](33..47) + [char[]](58..64) +
-                         [char[]](91..96) + [char[]](123..126)) # Special characters
-          }
-          $rawPassword = @()
-          $rawPassword += $charSet.Upper | Get-Random -Count 4
-          $rawPassword += $charSet.Lower | Get-Random -Count 4
-          $rawPassword += $charSet.Number | Get-Random -Count 4
-          $rawPassword += $charSet.Special | Get-Random -Count 4
-          $password = -join ($rawPassword | Sort-Object { Get-Random })
-          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
-          New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires
-          Add-LocalGroupMember -Group "Administrators" -Member "RDP"
-          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
-          
-          echo "RDP_CREDS=User: RDP | Password: $password" >> $env:GITHUB_ENV
-          
-          if (-not (Get-LocalUser -Name "RDP")) {
-              Write-Error "User creation failed"
-              exit 1
+          $username = "${{ github.event.inputs.rdp_username }}"
+          $inputPassword = "${{ github.event.inputs.rdp_password }}"
+          $password = ""
+
+          # التحقق مما إذا كان المستخدم موجودًا بالفعل
+          if (Get-LocalUser -Name $username -ErrorAction SilentlyContinue) {
+              Write-Host "User '$username' already exists. Updating password..."
+              # إذا كان هناك كلمة مرور محددة، نستخدمها
+              if ($inputPassword -ne "") {
+                  $password = $inputPassword
+              } else {
+                  # وإلا، ننشئ كلمة مرور عشوائية آمنة
+                  $password = [System.Web.Security.Membership]::GeneratePassword(16, 4)
+                  Write-Host "No password provided, generating a strong random password."
+              }
+              $securePass = ConvertTo-SecureString $password -AsPlainText -Force
+              Set-LocalUser -Name $username -Password $securePass -AccountNeverExpires
+          } else {
+              Write-Host "Creating new user '$username'..."
+              # إذا كان هناك كلمة مرور محددة، نستخدمها
+              if ($inputPassword -ne "") {
+                  $password = $inputPassword
+              } else {
+                  # وإلا، ننشئ كلمة مرور عشوائية آمنة
+                  $password = [System.Web.Security.Membership]::GeneratePassword(16, 4)
+                  Write-Host "No password provided, generating a strong random password."
+              }
+              $securePass = ConvertTo-SecureString $password -AsPlainText -Force
+              New-LocalUser -Name $username -Password $securePass -AccountNeverExpires
+              Write-Host "User '$username' created."
           }
 
-      - name: Install Tailscale
+          # إضافة المستخدم إلى مجموعتي المسؤولين ومستخدمي سطح المكتب البعيد
+          Write-Host "Adding user '$username' to Administrators and Remote Desktop Users groups..."
+          Add-LocalGroupMember -Group "Administrators" -Member $username
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member $username
+
+          # إخراج كلمة المرور بشكل آمن للخطوة الأخيرة فقط
+          echo "rdp_password=$password" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding UTF8
+
+      - name: Get Latest Tailscale MSI URL
+        id: get_tailscale_url
         run: |
-          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
+          # هذه الخطوة تحاول جلب أحدث إصدار مستقر من Tailscale
+          # إذا فشلت، سيتم استخدام الإصدار الافتراضي
+          try {
+              $releases = Invoke-RestMethod -Uri "https://api.github.com/repos/tailscale/tailscale/releases?per_page=1"
+              $latestRelease = $releases | Select-Object -First 1
+              $msiAsset = $latestRelease.assets | Where-Object { $_.name -like "tailscale-setup-*-amd64.msi" }
+              if ($msiAsset) {
+                  $tsUrl = $msiAsset.browser_download_url
+                  Write-Host "Latest Tailscale MSI URL: $tsUrl"
+                  echo "ts_url=$tsUrl" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding UTF8
+              } else {
+                  Write-Warning "Could not find latest Tailscale MSI. Using default version."
+                  echo "ts_url=https://pkgs.tailscale.com/stable/tailscale-setup-1.66.4-amd64.msi" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding UTF8
+              }
+          } catch {
+              Write-Warning "Failed to fetch latest Tailscale release from GitHub API. Using default version."
+              echo "ts_url=https://pkgs.tailscale.com/stable/tailscale-setup-1.66.4-amd64.msi" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding UTF8
+          }
+        shell: pwsh
+
+      - name: Install Tailscale Client
+        run: |
+          Write-Host "Downloading Tailscale from ${{ steps.get_tailscale_url.outputs.ts_url }}..."
+          $tsUrl = "${{ steps.get_tailscale_url.outputs.ts_url }}"
           $installerPath = "$env:TEMP\tailscale.msi"
           
           Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
+          
+          Write-Host "Installing Tailscale silently..."
           Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
+          
+          Write-Host "Tailscale installed. Cleaning up installer."
           Remove-Item $installerPath -Force
 
       - name: Establish Tailscale Connection
+        id: tailscale_connect
         run: |
-          # Bring up Tailscale with the provided auth key and set a unique hostname
-          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID
+          Write-Host "Bringing up Tailscale connection..."
+          $hostname = "${{ github.event.inputs.tailscale_hostname_prefix }}-$env:GITHUB_RUN_ID"
           
-          # Wait for Tailscale to assign an IP
+          # تأكد من أن TailscaleAuthKey موجود كـ Secret في مستودع GitHub الخاص بك
+          if ("${{ secrets.TAILSCALE_AUTH_KEY }}" -eq "") {
+            Write-Error "TAILSCALE_AUTH_KEY secret is not set. Please add it to your repository secrets."
+            exit 1
+          }
+
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=$hostname --accept-routes --accept-dns
+          
+          Write-Host "Waiting for Tailscale IP assignment..."
           $tsIP = $null
           $retries = 0
-          while (-not $tsIP -and $retries -lt 10) {
+          while (-not $tsIP -and $retries -lt 20) { # زيادة عدد المحاولات لفترة أطول
+              Start-Sleep -Seconds 3
               $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
-              Start-Sleep -Seconds 5
+              if ($tsIP) {
+                  $tsIP = $tsIP.Trim() # إزالة أي مسافات بيضاء
+              }
               $retries++
           }
           
           if (-not $tsIP) {
-              Write-Error "Tailscale IP not assigned. Exiting."
+              Write-Error "Tailscale IP not assigned after multiple retries. Exiting."
+              & "$env:ProgramFiles\Tailscale\tailscale.exe" status # للمساعدة في تصحيح الأخطاء
               exit 1
           }
-          echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
-      
-      - name: Verify RDP Accessibility
-        run: |
-          Write-Host "Tailscale IP: $env:TAILSCALE_IP"
           
-          # Test connectivity using Test-NetConnection against the Tailscale IP on port 3389
-          $testResult = Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 3389
-          if (-not $testResult.TcpTestSucceeded) {
-              Write-Error "TCP connection to RDP port 3389 failed"
-              exit 1
-          }
-          Write-Host "TCP connectivity successful!"
+          Write-Host "Tailscale IP: $tsIP"
+          echo "tailscale_ip=$tsIP" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding UTF8
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # لإذن الوصول إلى GitHub API في Get Latest Tailscale MSI URL
 
-      - name: Maintain Connection
+      - name: Verify RDP Accessibility via Tailscale IP
         run: |
-          Write-Host "`n=== RDP ACCESS ==="
-          Write-Host "Address: $env:TAILSCALE_IP"
-          Write-Host "Username: RDP"
-          Write-Host "Password: $(echo $env:RDP_CREDS)"
-          Write-Host "==================`n"
+          $tailscaleIp = "${{ steps.tailscale_connect.outputs.tailscale_ip }}"
+          Write-Host "Testing RDP connectivity to $tailscaleIp on port 3389..."
           
-          # Keep runner active indefinitely (or until manually cancelled)
-          while ($true) {
-              Write-Host "[$(Get-Date)] RDP Active - Use Ctrl+C in workflow to terminate"
-              Start-Sleep -Seconds 300
+          $testResult = Test-NetConnection -ComputerName $tailscaleIp -Port 3389 -WarningAction SilentlyContinue
+          
+          if ($testResult.TcpTestSucceeded) {
+              Write-Host "TCP connection to RDP port 3389 on $tailscaleIp successful!"
+          } else {
+              Write-Error "TCP connection to RDP port 3389 on $tailscaleIp failed."
+              Write-Host "Error details:"
+              $testResult # عرض تفاصيل الخطأ إن وجدت
+              exit 1
           }
+
+      - name: Display RDP Credentials and Maintain Connection
+        run: |
+          $tailscaleIp = "${{ steps.tailscale_connect.outputs.tailscale_ip }}"
+          $rdpUser = "${{ github.event.inputs.rdp_username }}"
+          $rdpPassword = "${{ steps.create_user.outputs.rdp_password }}"
+
+          Write-Host "`n======================================================="
+          Write-Host "            RDP ACCESS INFORMATION"
+          Write-Host "======================================================="
+          Write-Host "Tailscale IP Address: $tailscaleIp"
+          Write-Host "Username: $rdpUser"
+          Write-Host "Password: $rdpPassword"
+          Write-Host "-------------------------------------------------------"
+          Write-Host "To connect:"
+          Write-Host "1. Install Tailscale on your local machine and log in."
+          Write-Host "2. Open Remote Desktop Connection (mstsc.exe)."
+          Write-Host "3. Enter the Tailscale IP Address above."
+          Write-Host "4. Use the Username and Password provided."
+          Write-Host "======================================================="
+          Write-Host "`nWorkflow will remain active for ${{ github.job.timeout_minutes }} minutes."
+          Write-Host "To terminate the RDP session, cancel this workflow run manually."
+
+          # حلقة لا نهائية لإبقاء الرونر نشطًا حتى يتم إلغاء الـ Workflow يدويًا
+          while ($true) {
+              Write-Host "[$(Get-Date)] RDP Session Active. Waiting..."
+              Start-Sleep -Seconds 300 # انتظر 5 دقائق قبل إرسال رسالة أخرى
+          }
+        # هذه الخطوة تتطلب الوصول إلى مخرجات الخطوات السابقة
+        shell: pwsh
