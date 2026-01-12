@@ -1,4 +1,4 @@
-name: RDP
+name: RDP-Wind11
 
 # هذا الـ Workflow سيعمل يدويًا من واجهة GitHub Actions
 on:
@@ -25,6 +25,7 @@ jobs:
 
     steps:
       - name: Configure Secure RDP Settings
+        shell: pwsh
         run: |
           Write-Host "Enabling Remote Desktop and configuring security layers..."
           # 1. تمكين Remote Desktop
@@ -32,20 +33,15 @@ jobs:
                              -Name "fDenyTSConnections" -Value 0 -Force
 
           # 2. تفعيل NLA (Network Level Authentication) - موصى به للأمان
-          # يتطلب هذا أن يقوم عميل RDP بالمصادقة قبل إنشاء جلسة RDP كاملة.
-          # إذا واجهت مشاكل في الاتصال (قد تحتاج لتثبيت حزم NLA إضافية على جهازك المحلي)،
-          # يمكنك تغيير القيمة إلى 0 لتعطيل NLA، ولكن هذا يقلل بشكل كبير من الأمان.
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
                              -Name "UserAuthentication" -Value 1 -Force # 1 = Enabled (Recommended)
 
           # 3. تفعيل SSL/TLS لطبقة أمان RDP - موصى به بشدة للتشفير
-          # 0 = Negotiate (Default), 1 = RDP Security Layer, 2 = SSL/TLS Security Layer (Recommended)
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
                              -Name "SecurityLayer" -Value 2 -Force # 2 = SSL/TLS (Recommended)
 
           Write-Host "Configuring Windows Firewall for RDP..."
           # إزالة أي قاعدة موجودة بنفس الاسم لتجنب الازدواجية
-          # استخدام -ErrorAction SilentlyContinue لتجنب الفشل إذا لم تكن القاعدة موجودة
           Remove-NetFirewallRule -DisplayName "RDP-Tailscale" -ErrorAction SilentlyContinue
 
           # إضافة قاعدة جدار حماية للسماح باتصالات RDP الواردة على المنفذ الافتراضي (3389)
@@ -56,25 +52,33 @@ jobs:
                               -LocalPort 3389 `
                               -Description "Allow RDP traffic for Tailscale connection"
 
+          # [اختياري]: إضافة قواعد للسماح بـ ICMP (Ping) للمساعدة في التشخيص
+          New-NetFirewallRule -DisplayName "Tailscale Ping (ICMPv4 Inbound)" `
+                              -Direction Inbound `
+                              -Action Allow `
+                              -Protocol ICMPv4 `
+                              -Description "Allow inbound ICMPv4 for Tailscale diagnostics" -ErrorAction SilentlyContinue
+          New-NetFirewallRule -DisplayName "Tailscale Ping (ICMPv4 Outbound)" `
+                              -Direction Outbound `
+                              -Action Allow `
+                              -Protocol ICMPv4 `
+                              -Description "Allow outbound ICMPv4 for Tailscale diagnostics" -ErrorAction SilentlyContinue
+
           Write-Host "Restarting Remote Desktop Service..."
-          # إعادة تشغيل خدمة RDP لضمان تطبيق التغييرات
           Restart-Service -Name TermService -Force
 
       - name: Create or Update RDP User Account
         id: create_user
+        shell: pwsh
         run: |
           $username = "${{ github.event.inputs.rdp_username }}"
           $inputPassword = "${{ github.event.inputs.rdp_password }}"
           $password = ""
 
-          # التحقق مما إذا كان المستخدم موجودًا بالفعل
           if (Get-LocalUser -Name $username -ErrorAction SilentlyContinue) {
               Write-Host "User '$username' already exists. Updating password..."
-              # إذا كان هناك كلمة مرور محددة، نستخدمها
-              if ($inputPassword -ne "") {
-                  $password = $inputPassword
-              } else {
-                  # وإلا، ننشئ كلمة مرور عشوائية آمنة
+              if ($inputPassword -ne "") { $password = $inputPassword }
+              else {
                   $password = [System.Web.Security.Membership]::GeneratePassword(16, 4)
                   Write-Host "No password provided, generating a strong random password."
               }
@@ -82,11 +86,8 @@ jobs:
               Set-LocalUser -Name $username -Password $securePass -AccountNeverExpires
           } else {
               Write-Host "Creating new user '$username'..."
-              # إذا كان هناك كلمة مرور محددة، نستخدمها
-              if ($inputPassword -ne "") {
-                  $password = $inputPassword
-              } else {
-                  # وإلا، ننشئ كلمة مرور عشوائية آمنة
+              if ($inputPassword -ne "") { $password = $inputPassword }
+              else {
                   $password = [System.Web.Security.Membership]::GeneratePassword(16, 4)
                   Write-Host "No password provided, generating a strong random password."
               }
@@ -95,20 +96,98 @@ jobs:
               Write-Host "User '$username' created."
           }
 
-          # إضافة المستخدم إلى مجموعتي المسؤولين ومستخدمي سطح المكتب البعيد
           Write-Host "Adding user '$username' to Administrators and Remote Desktop Users groups..."
           Add-LocalGroupMember -Group "Administrators" -Member $username
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member $username
 
-          # إخراج كلمة المرور بشكل آمن للخطوة الأخيرة فقط
-          # GITHUB_OUTPUT هي الطريقة الآمنة لإرسال البيانات بين الخطوات
           echo "rdp_password=$password" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding UTF8
 
+      # ===============================
+      # 🔤 Arabic Keyboard (Egypt)
+      # ===============================
+      - name: Install Arabic Keyboard (Egypt)
+        shell: pwsh
+        run: |
+          Write-Host "Adding Arabic (Egypt) keyboard layout..."
+          $list = Get-WinUserLanguageList
+          if ($list.LanguageTag -notcontains "ar-EG") {
+              $list.Add("ar-EG")
+              Set-WinUserLanguageList $list -Force
+              Write-Host "Arabic (Egypt) keyboard layout added."
+          } else {
+              Write-Host "Arabic (Egypt) keyboard layout already exists."
+          }
+
+      # ===============================
+      # 🌐 Install Browsers + Dev Tools
+      # ===============================
+      - name: Update Winget Sources & Install Browsers + Dev Tools
+        shell: pwsh
+        run: |
+          Write-Host "Updating Winget sources..."
+          winget source update --force # استخدام --force لضمان التحديث
+
+          Write-Host "Installing Browsers (Brave, Chrome)..."
+          winget install --id Brave.Brave -e --silent --accept-package-agreements --accept-source-agreements
+          winget install --id Google.Chrome -e --silent --accept-package-agreements --accept-source-agreements
+
+          Write-Host "Installing Development Tools (Git, VS Code, Notepad++)..."
+          $devTools = @(
+              "Git.Git",
+              "Microsoft.VisualStudioCode",
+              "Notepad++.Notepad++"
+          )
+          foreach ($tool in $devTools) {
+              winget install --id $tool -e --silent --accept-package-agreements --accept-source-agreements
+          }
+          
+          # 🚨 تحذير: تثبيت Docker Desktop يتطلب Nested Virtualization وقد لا يعمل بكفاءة على GitHub Actions runners.
+          # إذا واجهت مشاكل، قد تحتاج لإزالة هذا الجزء.
+          Write-Host "Attempting to install Docker Desktop (requires restart and may not be fully functional on runner VMs)..."
+          try {
+              winget install --id Docker.DockerDesktop -e --silent --accept-package-agreements --accept-source-agreements
+              Write-Host "Docker Desktop installation initiated. A restart may be required for full functionality."
+          } catch {
+              Write-Warning "Failed to install Docker Desktop via winget. This is common on GitHub Actions runners due to virtualization requirements."
+          }
+
+      - name: Set Brave as Default Browser
+        shell: pwsh
+        run: |
+          Write-Host "Setting Brave as default browser..."
+          # هذه الطريقة تستخدم Group Policy لتعيين Brave كمتصفح افتراضي.
+          # قد لا يعمل دائمًا بشكل مثالي في جميع السيناريوهات الفردية،
+          # ولكنها أفضل طريقة لتعيينها برمجيًا.
+          $policyPath = "HKLM:\SOFTWARE\Policies\BraveSoftware\Brave"
+          New-Item -Path $policyPath -Force | Out-Null
+          Set-ItemProperty -Path $policyPath -Name "DefaultBrowserSettingEnabled" -Type DWord -Value 1 -Force
+          Write-Host "✅ Brave set as default browser (policy applied)."
+
+      # ===============================
+      # 🚀 Node.js Environment Setup
+      # ===============================
+      - name: Setup Node.js 20.15.1
+        uses: actions/setup-node@v4 # تم تحديث الإصدار إلى v4
+        with:
+          node-version: 20.15.1
+
+      - name: Install Yarn & PNPM Globally
+        shell: pwsh
+        run: |
+          Write-Host "Installing Yarn and PNPM globally..."
+          npm install -g yarn pnpm
+          Write-Host "Yarn version:"
+          yarn -v
+          Write-Host "PNPM version:"
+          pnpm -v
+
+      # ===============================
+      # 📡 Tailscale Connection Steps (كما هي)
+      # ===============================
       - name: Get Latest Tailscale MSI URL
         id: get_tailscale_url
+        shell: pwsh
         run: |
-          # هذه الخطوة تحاول جلب أحدث إصدار مستقر من Tailscale
-          # إذا فشلت، سيتم استخدام الإصدار الافتراضي (وهو ما حدث لديك سابقًا)
           try {
               $releases = Invoke-RestMethod -Uri "https://api.github.com/repos/tailscale/tailscale/releases?per_page=1" -Headers @{ Authorization = "token ${{ secrets.GITHUB_TOKEN }}" }
               $latestRelease = $releases | Select-Object -First 1
@@ -119,19 +198,17 @@ jobs:
                   echo "ts_url=$tsUrl" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding UTF8
               } else {
                   Write-Warning "Could not find latest Tailscale MSI. Using default version."
-                  # يمكن تحديث هذا الرابط إلى إصدار أحدث يدوياً إذا كانت API لا تعمل
                   echo "ts_url=https://pkgs.tailscale.com/stable/tailscale-setup-1.66.4-amd64.msi" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding UTF8
               }
           } catch {
               Write-Warning "Failed to fetch latest Tailscale release from GitHub API. Using default version."
-              # يمكن تحديث هذا الرابط إلى إصدار أحدث يدوياً إذا كانت API لا تعمل
               echo "ts_url=https://pkgs.tailscale.com/stable/tailscale-setup-1.66.4-amd64.msi" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding UTF8
           }
-        shell: pwsh
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # لإذن الوصول إلى GitHub API
 
       - name: Install Tailscale Client
+        shell: pwsh
         run: |
           Write-Host "Downloading Tailscale from ${{ steps.get_tailscale_url.outputs.ts_url }}..."
           $tsUrl = "${{ steps.get_tailscale_url.outputs.ts_url }}"
@@ -147,43 +224,41 @@ jobs:
 
       - name: Establish Tailscale Connection
         id: tailscale_connect
+        shell: pwsh
         run: |
           Write-Host "Bringing up Tailscale connection..."
           $hostname = "${{ github.event.inputs.tailscale_hostname_prefix }}-$env:GITHUB_RUN_ID"
           
-          # تأكد من أن TailscaleAuthKey موجود كـ Secret في مستودع GitHub الخاص بك
           if ("${{ secrets.TAILSCALE_AUTH_KEY }}" -eq "") {
             Write-Error "TAILSCALE_AUTH_KEY secret is not set. Please add it to your repository secrets."
             exit 1
           }
 
-          # هنا يتم استخدام مفتاح المصادقة الذي يحل مشكلة "invalid key"
           & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=$hostname --accept-routes --accept-dns
           
           Write-Host "Waiting for Tailscale IP assignment..."
           $tsIP = $null
           $retries = 0
-          # زيادة عدد المحاولات لفترة أطول وضبط وقت النوم
           while (-not $tsIP -and $retries -lt 20) {
               Start-Sleep -Seconds 3
               $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
               if ($tsIP) {
-                  $tsIP = $tsIP.Trim() # إزالة أي مسافات بيضاء
+                  $tsIP = $tsIP.Trim()
               }
               $retries++
           }
           
           if (-not $tsIP) {
               Write-Error "Tailscale IP not assigned after multiple retries. Exiting."
-              & "$env:ProgramFiles\Tailscale\tailscale.exe" status # للمساعدة في تصحيح الأخطاء
+              & "$env:ProgramFiles\Tailscale\tailscale.exe" status
               exit 1
           }
           
           Write-Host "Tailscale IP: $tsIP"
           echo "tailscale_ip=$tsIP" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding UTF8
-        # لا حاجة لـ GITHUB_TOKEN هنا، فقد تم استخدامه في خطوة سابقة.
 
       - name: Verify RDP Accessibility via Tailscale IP
+        shell: pwsh
         run: |
           $tailscaleIp = "${{ steps.tailscale_connect.outputs.tailscale_ip }}"
           Write-Host "Testing RDP connectivity to $tailscaleIp on port 3389..."
@@ -195,11 +270,15 @@ jobs:
           } else {
               Write-Error "TCP connection to RDP port 3389 on $tailscaleIp failed."
               Write-Host "Error details:"
-              $testResult # عرض تفاصيل الخطأ إن وجدت
+              $testResult
               exit 1
           }
 
+      # ===============================
+      # 🔁 Display Info & Maintain Connection
+      # ===============================
       - name: Display RDP Credentials and Maintain Connection
+        shell: pwsh
         run: |
           $tailscaleIp = "${{ steps.tailscale_connect.outputs.tailscale_ip }}"
           $rdpUser = "${{ github.event.inputs.rdp_username }}"
@@ -210,7 +289,13 @@ jobs:
           Write-Host "======================================================="
           Write-Host "Tailscale IP Address: $tailscaleIp"
           Write-Host "Username: $rdpUser"
-          Write-Host "Password: $rdpPassword" # ستظهر كلمة المرور هنا فقط
+          Write-Host "Password: $rdpPassword"
+          Write-Host "-------------------------------------------------------"
+          Write-Host "Pre-configured Tools:"
+          Write-Host "- Browsers: Brave (Default), Chrome"
+          Write-Host "- Dev Tools: Git, VS Code, Notepad++"
+          Write-Host "- Node.js (20.15.1), Yarn, PNPM"
+          Write-Host "- Keyboard: Arabic (Egypt) layout added"
           Write-Host "-------------------------------------------------------"
           Write-Host "To connect:"
           Write-Host "1. Install Tailscale on your local machine and log in."
@@ -222,9 +307,7 @@ jobs:
           Write-Host "`nWorkflow will remain active for ${{ github.job.timeout_minutes }} minutes."
           Write-Host "To terminate the RDP session, cancel this workflow run manually."
 
-          # حلقة لا نهائية لإبقاء الرونر نشطًا حتى يتم إلغاء الـ Workflow يدويًا
           while ($true) {
               Write-Host "[$(Get-Date)] RDP Session Active. Waiting..."
-              Start-Sleep -Seconds 300 # انتظر 5 دقائق قبل إرسال رسالة أخرى
+              Start-Sleep -Seconds 300
           }
-        shell: pwsh
