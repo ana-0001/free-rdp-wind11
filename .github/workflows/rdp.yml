@@ -1,19 +1,19 @@
-name: RDP
+name: RDP Access via Tailscale
 
+# هذا الـ Workflow سيعمل يدويًا من واجهة GitHub Actions
 on:
-  # يسمح بتشغيل Workflow يدويًا من واجهة GitHub Actions
   workflow_dispatch:
     inputs:
       rdp_username:
-        description: 'Username for RDP access (default: RDP)'
+        description: 'اسم المستخدم للوصول إلى RDP (الافتراضي: RDP)'
         required: false
         default: 'RDP'
       rdp_password:
-        description: 'Password for RDP access (leave empty for a strong random password)'
+        description: 'كلمة المرور للوصول إلى RDP (اتركها فارغة لإنشاء كلمة مرور عشوائية قوية)'
         required: false
-        default: ''
+        default: '' # سيتم استخدام "Admin@000" إذا قمت بإدخالها هنا عند التشغيل
       tailscale_hostname_prefix:
-        description: 'Prefix for Tailscale hostname (e.g., gh-runner will be gh-runner-<run_id>)'
+        description: 'بادئة لاسم مضيف Tailscale (على سبيل المثال، gh-runner ستصبح gh-runner-<run_id>)'
         required: false
         default: 'gh-runner'
 
@@ -23,21 +23,18 @@ jobs:
     # يحدد أقصى وقت للتشغيل. 3600 دقيقة (60 ساعة) كافية لجلسة RDP طويلة.
     timeout-minutes: 3600
 
-    env:
-      TAILSCALE_VERSION: "latest" # يمكن تحديث هذا لاحقًا ليجلب أحدث إصدار ديناميكيًا إذا لزم الأمر
-
     steps:
       - name: Configure Secure RDP Settings
         run: |
           Write-Host "Enabling Remote Desktop and configuring security layers..."
           # 1. تمكين Remote Desktop
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
+          Set-ItemProperty -Path 'HKLM:\System\CurrentSet\Control\Terminal Server' `
                              -Name "fDenyTSConnections" -Value 0 -Force
 
           # 2. تفعيل NLA (Network Level Authentication) - موصى به للأمان
           # يتطلب هذا أن يقوم عميل RDP بالمصادقة قبل إنشاء جلسة RDP كاملة.
-          # إذا واجهت مشاكل في الاتصال، يمكنك تغيير القيمة إلى 0 لتعطيل NLA،
-          # ولكن هذا يقلل بشكل كبير من الأمان.
+          # إذا واجهت مشاكل في الاتصال (قد تحتاج لتثبيت حزم NLA إضافية على جهازك المحلي)،
+          # يمكنك تغيير القيمة إلى 0 لتعطيل NLA، ولكن هذا يقلل بشكل كبير من الأمان.
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
                              -Name "UserAuthentication" -Value 1 -Force # 1 = Enabled (Recommended)
 
@@ -104,15 +101,16 @@ jobs:
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member $username
 
           # إخراج كلمة المرور بشكل آمن للخطوة الأخيرة فقط
+          # GITHUB_OUTPUT هي الطريقة الآمنة لإرسال البيانات بين الخطوات
           echo "rdp_password=$password" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding UTF8
 
       - name: Get Latest Tailscale MSI URL
         id: get_tailscale_url
         run: |
           # هذه الخطوة تحاول جلب أحدث إصدار مستقر من Tailscale
-          # إذا فشلت، سيتم استخدام الإصدار الافتراضي
+          # إذا فشلت، سيتم استخدام الإصدار الافتراضي (وهو ما حدث لديك سابقًا)
           try {
-              $releases = Invoke-RestMethod -Uri "https://api.github.com/repos/tailscale/tailscale/releases?per_page=1"
+              $releases = Invoke-RestMethod -Uri "https://api.github.com/repos/tailscale/tailscale/releases?per_page=1" -Headers @{ Authorization = "token ${{ secrets.GITHUB_TOKEN }}" }
               $latestRelease = $releases | Select-Object -First 1
               $msiAsset = $latestRelease.assets | Where-Object { $_.name -like "tailscale-setup-*-amd64.msi" }
               if ($msiAsset) {
@@ -121,13 +119,17 @@ jobs:
                   echo "ts_url=$tsUrl" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding UTF8
               } else {
                   Write-Warning "Could not find latest Tailscale MSI. Using default version."
+                  # يمكن تحديث هذا الرابط إلى إصدار أحدث يدوياً إذا كانت API لا تعمل
                   echo "ts_url=https://pkgs.tailscale.com/stable/tailscale-setup-1.66.4-amd64.msi" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding UTF8
               }
           } catch {
               Write-Warning "Failed to fetch latest Tailscale release from GitHub API. Using default version."
+              # يمكن تحديث هذا الرابط إلى إصدار أحدث يدوياً إذا كانت API لا تعمل
               echo "ts_url=https://pkgs.tailscale.com/stable/tailscale-setup-1.66.4-amd64.msi" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding UTF8
           }
         shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # لإذن الوصول إلى GitHub API
 
       - name: Install Tailscale Client
         run: |
@@ -155,12 +157,14 @@ jobs:
             exit 1
           }
 
+          # هنا يتم استخدام مفتاح المصادقة الذي يحل مشكلة "invalid key"
           & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=$hostname --accept-routes --accept-dns
           
           Write-Host "Waiting for Tailscale IP assignment..."
           $tsIP = $null
           $retries = 0
-          while (-not $tsIP -and $retries -lt 20) { # زيادة عدد المحاولات لفترة أطول
+          # زيادة عدد المحاولات لفترة أطول وضبط وقت النوم
+          while (-not $tsIP -and $retries -lt 20) {
               Start-Sleep -Seconds 3
               $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
               if ($tsIP) {
@@ -177,8 +181,7 @@ jobs:
           
           Write-Host "Tailscale IP: $tsIP"
           echo "tailscale_ip=$tsIP" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding UTF8
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # لإذن الوصول إلى GitHub API في Get Latest Tailscale MSI URL
+        # لا حاجة لـ GITHUB_TOKEN هنا، فقد تم استخدامه في خطوة سابقة.
 
       - name: Verify RDP Accessibility via Tailscale IP
         run: |
@@ -207,13 +210,14 @@ jobs:
           Write-Host "======================================================="
           Write-Host "Tailscale IP Address: $tailscaleIp"
           Write-Host "Username: $rdpUser"
-          Write-Host "Password: $rdpPassword"
+          Write-Host "Password: $rdpPassword" # ستظهر كلمة المرور هنا فقط
           Write-Host "-------------------------------------------------------"
           Write-Host "To connect:"
           Write-Host "1. Install Tailscale on your local machine and log in."
-          Write-Host "2. Open Remote Desktop Connection (mstsc.exe)."
-          Write-Host "3. Enter the Tailscale IP Address above."
-          Write-Host "4. Use the Username and Password provided."
+          Write-Host "2. Make sure your Tailscale is connected to the same Tailnet as this runner."
+          Write-Host "3. Open Remote Desktop Connection (mstsc.exe on Windows)."
+          Write-Host "4. Enter the Tailscale IP Address above."
+          Write-Host "5. Use the Username and Password provided."
           Write-Host "======================================================="
           Write-Host "`nWorkflow will remain active for ${{ github.job.timeout_minutes }} minutes."
           Write-Host "To terminate the RDP session, cancel this workflow run manually."
@@ -223,5 +227,4 @@ jobs:
               Write-Host "[$(Get-Date)] RDP Session Active. Waiting..."
               Start-Sleep -Seconds 300 # انتظر 5 دقائق قبل إرسال رسالة أخرى
           }
-        # هذه الخطوة تتطلب الوصول إلى مخرجات الخطوات السابقة
         shell: pwsh
