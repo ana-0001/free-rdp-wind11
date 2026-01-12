@@ -1,4 +1,4 @@
-name: RDP Access via Tailscale
+name: RDP-W11
 
 # هذا الـ Workflow سيعمل يدويًا من واجهة GitHub Actions
 on:
@@ -20,8 +20,7 @@ on:
 jobs:
   secure-rdp-session:
     runs-on: windows-latest
-    # يحدد أقصى وقت للتشغيل. 3600 دقيقة (60 ساعة) كافية لجلسة RDP طويلة.
-    timeout-minutes: 3600
+    timeout-minutes: 21600
 
     steps:
       - name: Configure Secure RDP Settings
@@ -33,7 +32,7 @@ jobs:
                              -Name "fDenyTSConnections" -Value 0 -Force
 
           # 2. تفعيل NLA (Network Level Authentication) - موصى به للأمان
-          Set-ItemProperty -Path 'HKLM:\System\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
                              -Name "UserAuthentication" -Value 1 -Force # 1 = Enabled (Recommended)
 
           # 3. تفعيل SSL/TLS لطبقة أمان RDP - موصى به بشدة للتشفير
@@ -103,7 +102,7 @@ jobs:
           echo "rdp_password=$password" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding UTF8
 
       # ===============================
-      # 📡 Tailscale Connection Steps
+      # 📡 Tailscale Connection Steps (كما هي)
       # ===============================
       - name: Get Latest Tailscale MSI URL
         id: get_tailscale_url
@@ -211,6 +210,8 @@ jobs:
           Write-Host "Tailscale IP Address: $tailscaleIp"
           Write-Host "Username: $rdpUser"
           Write-Host "Password: $rdpPassword"
+          Write-Host "-------------------------------------------------------"
+          Write-Host "Pre-configured Tools:"
           Write-Host "-------------------------------------------------------"
           Write-Host "To connect:"
           Write-Host "1. Install Tailscale on your local machine and log in."
