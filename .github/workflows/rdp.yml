@@ -20,7 +20,7 @@ on:
 jobs:
   secure-rdp-session:
     runs-on: windows-latest
-    timeout-minutes: 21600
+    timeout-minutes: 216000
 
     steps:
       - name: Configure Secure RDP Settings
