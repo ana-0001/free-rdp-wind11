@@ -1,3 +1,4 @@
+
 # =========================================================
 #  Windows 11 Dev Environment Bootstrap Script
 #  Author: BomBa
@@ -66,18 +67,21 @@ Wait-Step 3
 # =========================================================
 Write-Host "🟢 Installing NVM..." -ForegroundColor Green
 choco install nvm -y
+Wait-Step 2
+nvm -v
 Wait-Step 4
 
 # =========================================================
 # 6️⃣ restart-powershell
 # =========================================================
 Restart-PowerShell
-Wait-Step 2
-Start-Process powershell `
--ArgumentList "-NoExit -ExecutionPolicy Bypass -File `"$PSCommandPath`"" `
--Verb RunAs
+if (-not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()
+).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    Start-Process powershell `
+      -ArgumentList "-NoExit -ExecutionPolicy Bypass -File `"$PSCommandPath`"" `
+      -Verb RunAs
+}
 
-exit
 Wait-Step 4
 
 # =========================================================
@@ -85,6 +89,8 @@ Wait-Step 4
 # =========================================================
 nvm install 20.15.1
 nvm use 20.15.1
+Wait-Step 2
+node -v
 Wait-Step 3
 
 # =========================================================
@@ -92,6 +98,8 @@ Wait-Step 3
 # =========================================================
 Write-Host "📦 Installing Yarn & PNPM..." -ForegroundColor Green
 npm install -g yarn pnpm
+Wait-Step 2
+yarn -v
 Wait-Step 3
 
 # =========================================================
@@ -101,12 +109,131 @@ Write-Host "🧑‍💻 Installing Dev Tools..." -ForegroundColor Green
 choco install vscode notepadplusplus -y
 Wait-Step 3
 
+# - Windsurf
+Write-Host "🌊 Checking Windsurf..." -ForegroundColor Cyan
+$windsurfPath = "$env:LOCALAPPDATA\Programs\Windsurf\Windsurf.exe"
+if (-not (Test-Path $windsurfPath)) {
+    Write-Host "📦 Installing Windsurf (latest version)..." -ForegroundColor Green
+    winget install --id Codeium.Windsurf -e --silent
+    Start-Sleep -Seconds 5
+    Write-Host "✅ Windsurf installed successfully."
+} else {
+    Write-Host "ℹ Windsurf is already installed."
+}
+Wait-Step 3
+# Open Windsurf
+Start-Process "$env:LOCALAPPDATA\Programs\Windsurf\Windsurf.exe"
+Wait-Step 3
+
+
 # =========================================================
 # 1️⃣0️⃣ Antigravity (CLI tool assumption)
 # =========================================================
 Write-Host "🚀 Installing Antigravity..." -ForegroundColor Green
 choco install antigravity -y -ErrorAction SilentlyContinue
 Wait-Step 3
+
+# =========================================================
+# 1️⃣1️⃣ Install GitHub Desktop
+# =========================================================
+Write-Host "🐙 Checking GitHub Desktop..." -ForegroundColor Cyan
+
+$githubDesktopPath = "$env:LOCALAPPDATA\GitHubDesktop\GitHubDesktop.exe"
+
+if (-not (Test-Path $githubDesktopPath)) {
+    Write-Host "📦 Installing GitHub Desktop..." -ForegroundColor Green
+    winget install --id GitHub.GitHubDesktop -e --silent
+    Start-Sleep -Seconds 5
+    Write-Host "✅ GitHub Desktop installed successfully."
+} else {
+    Write-Host "ℹ GitHub Desktop is already installed."
+}
+
+# =========================================================
+# 1️⃣2️⃣ Install Bruno 3.0.2 (Windows x64)
+# =========================================================
+Write-Host "🚀 Checking Bruno (API Client)..." -ForegroundColor Cyan
+
+$brunoPath = "$env:LOCALAPPDATA\Programs\Bruno\Bruno.exe"
+
+if (-not (Test-Path $brunoPath)) {
+    Write-Host "📦 Installing Bruno (latest version)..." -ForegroundColor Green
+    winget install --id Bruno.Bruno -e --silent
+    Start-Sleep -Seconds 5
+    Write-Host "✅ Bruno installed successfully."
+} else {
+    Write-Host "ℹ Bruno is already installed."
+}
+Wait-Step 3
+# Open Bruno
+# Start-Process "$env:LOCALAPPDATA\Programs\Bruno\Bruno.exe"
+
+
+
+
+
+
+
+# =========================================================
+# 1️⃣3️⃣ Install WSL 2 - Full Setup + Docker
+# =========================================================
+
+# Ensure Admin
+if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent() ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    Start-Process powershell `
+      -ArgumentList "-NoExit -ExecutionPolicy Bypass -File `"$PSCommandPath`"" `
+      -Verb RunAs
+    exit
+}
+
+function Wait-Step($sec = 4) {
+    Write-Host "⏳ Waiting $sec seconds..."
+    Start-Sleep -Seconds $sec
+}
+
+Write-Host "🧠 Installing WSL 2..." -ForegroundColor Green
+
+# Enable required Windows features
+$features = @(
+    "Microsoft-Windows-Subsystem-Linux",
+    "VirtualMachinePlatform"
+)
+
+$rebootRequired = $false
+
+foreach ($feature in $features) {
+    $state = (Get-WindowsOptionalFeature -Online -FeatureName $feature).State
+    if ($state -ne "Enabled") {
+        Write-Host "⚙ Enabling: $feature"
+        Enable-WindowsOptionalFeature -Online -FeatureName $feature -NoRestart
+        $rebootRequired = $true
+    }
+}
+
+Wait-Step
+
+# Set WSL2 as default
+wsl --set-default-version 2 2>$null
+
+# Install Ubuntu if not exists
+if (-not (wsl -l -q 2>$null | Select-String "Ubuntu")) {
+    Write-Host "📦 Installing Ubuntu..."
+    wsl --install -d Ubuntu
+    $rebootRequired = $true
+}
+
+Wait-Step 5
+
+# Reboot if needed
+if ($rebootRequired) {
+    Write-Host "🔄 Reboot required to complete WSL installation." -ForegroundColor Yellow
+    Start-Sleep 10
+    Restart-Computer -Force
+}
+
+Write-Host "✅ WSL 2 installation completed successfully!" -ForegroundColor Cyan
+
+Wait-Step 5
 
 # =========================================================
 # 1️⃣1️⃣ Docker + Docker Desktop
