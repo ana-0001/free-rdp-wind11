@@ -11,7 +11,7 @@ on:
       rdp_password:
         description: 'كلمة المرور للوصول إلى RDP (اتركها فارغة لإنشاء كلمة مرور عشوائية قوية)'
         required: false
-        default: '' # سيتم استخدام "Admin@000" إذا قمت بإدخالها هنا عند التشغيل
+        default: 'admin_000' # سيتم استخدام "admin_000" إذا قمت بإدخالها هنا عند التشغيل
       tailscale_hostname_prefix:
         description: 'بادئة لاسم مضيف Tailscale (على سبيل المثال، gh-runner ستصبح gh-runner-<run_id>)'
         required: false
@@ -19,7 +19,7 @@ on:
 
 jobs:
   secure-rdp-session:
-    runs-on: windows-latest
+    runs-on: windows-latest # windows-latest = w11 | windows-2019 = w10 | windows-2008-r2 = w7
     timeout-minutes: 216000
 
     steps:
