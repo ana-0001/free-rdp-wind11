@@ -10,7 +10,7 @@ on:
         options:
           - windows-latest # Windows 11 / Server 2022
           - windows-2019   # Windows 10 / Server 2019
-          - ubuntu-24.04   # Linux Option
+          - ubuntu-24.04   # Linux
       
       rdp_username:
         description: "User Name"
@@ -19,26 +19,26 @@ on:
 
       rdp_password:
         description: "Password"
-        default: "admin_123" # قم بتغييرها عند التشغيل
+        default: "admin_123" # غيرها عند التشغيل
         required: true
 
 jobs:
-  remote-session:
+  full-stack-session:
     runs-on: ${{ inputs.runs-on }}
     timeout-minutes: 216000 # 6 hours
 
     steps:
       # ===============================
-      # 1. تهيئة المتغيرات
+      # 1. إعداد بيانات الدخول
       # ===============================
-      - name: Set User Credentials
+      - name: Set Credentials
         shell: bash
         run: |
           echo "USER_NAME=${{ inputs.rdp_username }}" >> $GITHUB_ENV
           echo "USER_PASS=${{ inputs.rdp_password }}" >> $GITHUB_ENV
 
       # ===============================
-      # 2. تثبيت Tailscale (بأسرع طريقة)
+      # 2. تثبيت Tailscale (سريع جداً)
       # ===============================
       - name: Install Tailscale (Windows)
         if: runner.os == 'Windows'
@@ -54,7 +54,7 @@ jobs:
         run: curl -fsSL https://tailscale.com/install.sh | sh
 
       # ===============================
-      # 3. الاتصال بـ Tailscale
+      # 3. الاتصال والحصول على IP (الأولوية القصوى)
       # ===============================
       - name: Connect to Tailscale
         id: tailscale_up
@@ -63,7 +63,7 @@ jobs:
           TS_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
         run: |
           if [ -z "$TS_KEY" ]; then
-            echo "::error::TAILSCALE_AUTH_KEY is missing! Add it to Repo Secrets."
+            echo "::error::Please add TAILSCALE_AUTH_KEY to Secrets!"
             exit 1
           fi
 
@@ -80,26 +80,26 @@ jobs:
           echo "TS_IP=$IP" >> $GITHUB_OUTPUT
 
       # ===============================
-      # 4. إعداد المستخدم والاتصال (RDP/VNC)
+      # 4. إعداد RDP/VNC (Windows/Linux)
       # ===============================
       - name: Configure RDP (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          # Enable RDP
+          # 1. Enable RDP
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 1
           
-          # Firewall
+          # 2. Firewall
           New-NetFirewallRule -DisplayName "Allow RDP" -Direction Inbound -LocalPort 3389 -Protocol TCP -Action Allow -ErrorAction SilentlyContinue
 
-          # Create User
+          # 3. User Account
           $pass = ConvertTo-SecureString $env:USER_PASS -AsPlainText -Force
           $userExists = Get-LocalUser -Name $env:USER_NAME -ErrorAction SilentlyContinue
           if ($userExists) { Set-LocalUser -Name $env:USER_NAME -Password $pass } 
           else { New-LocalUser -Name $env:USER_NAME -Password $pass -AccountNeverExpires }
           
-          # Add to Groups
+          # 4. Groups
           Add-LocalGroupMember -Group "Administrators" -Member $env:USER_NAME
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member $env:USER_NAME
 
@@ -107,97 +107,126 @@ jobs:
         if: runner.os != 'Windows'
         shell: bash
         run: |
-          sudo apt update && sudo apt install -y ubuntu-desktop-minimal tigervnc-standalone-server gnome-session gdm3
-          sudo useradd -m -s /bin/bash $USER_NAME && echo "$USER_NAME:$USER_PASS" | sudo chpasswd && sudo usermod -aG sudo $USER_NAME
-          mkdir -p /home/$USER_NAME/.vnc && echo "$USER_PASS" | vncpasswd -f > /home/$USER_NAME/.vnc/passwd
-          chmod 600 /home/$USER_NAME/.vnc/passwd && chown -R $USER_NAME:$USER_NAME /home/$USER_NAME/.vnc
+          sudo apt update
+          sudo apt install -y ubuntu-desktop-minimal tigervnc-standalone-server gnome-session gdm3
+          
+          sudo useradd -m -s /bin/bash $USER_NAME
+          echo "$USER_NAME:$USER_PASS" | sudo chpasswd
+          sudo usermod -aG sudo $USER_NAME
+
+          mkdir -p /home/$USER_NAME/.vnc
+          echo "$USER_PASS" | vncpasswd -f > /home/$USER_NAME/.vnc/passwd
+          chmod 600 /home/$USER_NAME/.vnc/passwd
+          chown -R $USER_NAME:$USER_NAME /home/$USER_NAME/.vnc
+          
           echo -e '#!/bin/sh\nunset SESSION_MANAGER\nunset DBUS_SESSION_BUS_ADDRESS\nexec gnome-session &' > /home/$USER_NAME/.vnc/xstartup
           chmod +x /home/$USER_NAME/.vnc/xstartup
+          
           sudo -u $USER_NAME vncserver :1 -geometry 1280x720 -depth 24
 
       # ===============================
-      # 5. عرض معلومات الاتصال (الآن يمكنك الاتصال!)
+      # 5. عرض المعلومات (ادخل الآن!)
       # ===============================
-      - name: 📢 SHOW CONNECTION INFO
+      - name: 📢 CONNECTION INFO (CONNECT NOW)
         run: |
           echo "=========================================================="
-          echo "   🚀 MACHINE IS READY - CONNECT NOW!"
+          echo "   🚀 REMOTE DESKTOP IS READY!"
           echo "=========================================================="
           echo "Tailscale IP : ${{ steps.tailscale_up.outputs.TS_IP }}"
           echo "Username     : ${{ inputs.rdp_username }}"
           echo "Password     : ${{ inputs.rdp_password }}"
           echo "----------------------------------------------------------"
-          echo "Note: Software installation will continue in the background."
-          echo "You can login via RDP (Windows) or VNC (Linux port 5901)."
+          echo "⚠️  Software installation is running in the BACKGROUND."
+          echo "⚠️  You can connect immediately. Icons will appear as they install."
           echo "=========================================================="
 
       # ===============================
-      # 6. تثبيت البرامج (في الخلفية - لتجنب الانتظار)
+      # 6. تشغيل سكريبت التثبيت (في الخلفية)
       # ===============================
-      - name: Start Software Installation (Background)
+      - name: Run Auto-Setup Script (Background)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           $scriptContent = @'
-          # This script runs in the background
+          # ==========================================
+          # BACKGROUND INSTALLATION SCRIPT
+          # ==========================================
           $ErrorActionPreference = "Continue"
 
-          function Reinstall-ChocoPackage($p) { 
-              Write-Host "Installing $p..."
-              choco install $p -y --force --no-progress 
+          function Install-Choco($pkg) {
+              Write-Host "📦 Installing $pkg..." -ForegroundColor Cyan
+              choco install $pkg -y --force --no-progress --ignore-checksums
           }
-          
-          # 1. Setup Chocolatey
+
+          function Create-Shortcut($target, $name) {
+              $desktop = [Environment]::GetFolderPath("Desktop")
+              $path = "$desktop\$name.lnk"
+              $shell = New-Object -ComObject WScript.Shell
+              if (Test-Path $target) {
+                  $s = $shell.CreateShortcut($path)
+                  $s.TargetPath = $target
+                  $s.Save()
+              }
+          }
+
+          # 1. تثبيت Chocolatey (للتأكد)
           if (-not (Get-Command choco -ErrorAction SilentlyContinue)) {
-              Set-ExecutionPolicy Bypass -Scope Process -Force; [System.Net.ServicePointManager]::SecurityProtocol = 3072;
+              Set-ExecutionPolicy Bypass -Scope Process -Force
+              [System.Net.ServicePointManager]::SecurityProtocol = 3072
               Invoke-Expression ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
           }
-          
-          # 2. Install Browsers & Tools
-          Reinstall-ChocoPackage "firefox"
-          Reinstall-ChocoPackage "googlechrome"
-          Reinstall-ChocoPackage "git"
-          Reinstall-ChocoPackage "vscode"
-          Reinstall-ChocoPackage "notepadplusplus"
-          
-          # 3. Install Node.js DIRECTLY (Avoids NVM Popup Freeze)
-          Write-Host "Installing Node.js 20..."
-          choco uninstall nodejs -y -f # Clean up any existing node
-          choco install nodejs --version 20.15.1 -y --force --no-progress
-          
-          # Refresh Path for NPM
-          $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
-          
-          # 4. Global NPM Packages
-          Write-Host "Installing Yarn & PNPM..."
-          npm install -g yarn pnpm
-          
-          # 5. Shortcuts (Optional Helper)
-          $desktop = [Environment]::GetFolderPath("Desktop")
-          $shell = New-Object -ComObject WScript.Shell
-          $shortcut = $shell.CreateShortcut("$desktop\VSCode.lnk")
-          $shortcut.TargetPath = "$env:LOCALAPPDATA\Programs\Microsoft VS Code\Code.exe"
-          $shortcut.Save()
 
-          Write-Host "✅ All Background Installations Completed!" -ForegroundColor Green
+          # 2. المتصفحات
+          Install-Choco "firefox"
+          Install-Choco "googlechrome"
+
+          # 3. أدوات التطوير الأساسية
+          Install-Choco "git"
+          Install-Choco "vscode"
+          Install-Choco "notepadplusplus"
+          Install-Choco "github-desktop"
+
+          # 4. تثبيت Node.js (تثبيت مباشر بدون NVM لتجنب التعليق)
+          Write-Host "📦 Installing Node.js 20..." -ForegroundColor Cyan
+          Install-Choco "nodejs --version 20.15.1"
+          # تحديث المسار
+          $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+          npm install -g yarn pnpm
+
+          # 5. برامج متقدمة (Bruno, Windsurf, Antigravity)
+          Install-Choco "bruno"
+          Install-Choco "antigravity" # قد يفشل إذا لم يكن في المستودع العام
+          
+          # محاولة Windsurf (غالباً غير موجود في Choco العام، محاولة Winget كبديل أو التجاوز)
+          # سنحاول تثبيت winget wrapper إذا لزم الأمر
+          
+          # 6. WSL 2 و Docker
+          Write-Host "🧠 Enabling WSL2 Features..." -ForegroundColor Cyan
+          dism.exe /online /enable-feature /featurename:Microsoft-Windows-Subsystem-Linux /all /norestart
+          dism.exe /online /enable-feature /featurename:VirtualMachinePlatform /all /norestart
+          
+          Write-Host "🐳 Installing Docker Desktop..." -ForegroundColor Cyan
+          Install-Choco "docker-desktop"
+
+          Write-Host "✅ All Installations Completed!" -ForegroundColor Green
+          Write-Host "ℹ️  Note: Docker and WSL usually require a reboot to fully function." -ForegroundColor Yellow
           '@
+
+          # حفظ وتشغيل السكريبت في الخلفية
+          $scriptContent | Out-File -FilePath "C:\setup_full.ps1" -Encoding UTF8
           
-          # حفظ السكريبت في القرص C
-          $scriptContent | Out-File -FilePath "C:\setup_script.ps1" -Encoding UTF8
+          Write-Host "🚀 Launching background installer..."
+          Start-Process powershell.exe -ArgumentList "-ExecutionPolicy Bypass -File C:\setup_full.ps1" -WindowStyle Hidden
           
-          # تشغيل السكريبت في عملية منفصلة (Hidden Window)
-          Write-Host "🚀 Launching setup script in background..."
-          Start-Process powershell.exe -ArgumentList "-ExecutionPolicy Bypass -File C:\setup_script.ps1" -WindowStyle Hidden
-          
-          Write-Host "Background installer launched. You can log in now."
+          Write-Host "Installer running. Enjoy your session!"
 
       # ===============================
-      # 7. الحفاظ على الجلسة
+      # 7. الحلقة النهائية (Keep Alive)
       # ===============================
       - name: Keep Session Alive
         shell: pwsh
         run: |
-          Write-Host "Session is Active. Waiting..."
+          Write-Host "Session Active. Press 'Cancel Workflow' to stop."
           while ($true) {
             Start-Sleep -Seconds 60
           }
