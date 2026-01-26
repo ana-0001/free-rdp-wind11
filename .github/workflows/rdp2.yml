@@ -38,7 +38,7 @@ jobs:
           echo "USER_PASS=${{ inputs.rdp_password }}" >> $GITHUB_ENV
 
       # ===============================
-      # 2. تثبيت Tailscale (سريع جداً)
+      # 2. تثبيت Tailscale (Windows/Linux)
       # ===============================
       - name: Install Tailscale (Windows)
         if: runner.os == 'Windows'
@@ -54,7 +54,7 @@ jobs:
         run: curl -fsSL https://tailscale.com/install.sh | sh
 
       # ===============================
-      # 3. الاتصال والحصول على IP (الأولوية القصوى)
+      # 3. الاتصال والحصول على IP (تم الإصلاح)
       # ===============================
       - name: Connect to Tailscale
         id: tailscale_up
@@ -69,10 +69,12 @@ jobs:
 
           HOSTNAME="gh-runner-${{ github.run_id }}"
           
+          # تم إصلاح الخطأ هنا: إزالة --ssh من أمر Windows
           if [ "$RUNNER_OS" == "Windows" ]; then
-             "/c/Program Files/Tailscale/tailscale.exe" up --authkey=$TS_KEY --hostname=$HOSTNAME --accept-routes --ssh
+             "/c/Program Files/Tailscale/tailscale.exe" up --authkey=$TS_KEY --hostname=$HOSTNAME --accept-routes
              IP=$("/c/Program Files/Tailscale/tailscale.exe" ip -4)
           else
+             # في Linux الميزة مدعومة، نتركها كما هي
              sudo tailscale up --authkey=$TS_KEY --hostname=$HOSTNAME --accept-routes --ssh
              IP=$(tailscale ip -4)
           fi
@@ -154,19 +156,9 @@ jobs:
           $ErrorActionPreference = "Continue"
 
           function Install-Choco($pkg) {
-              Write-Host "📦 Installing $pkg..." -ForegroundColor Cyan
+              Write-Host "Installing $pkg..." -ForegroundColor Cyan
+              # --ignore-checksums added to avoid hash mismatch errors
               choco install $pkg -y --force --no-progress --ignore-checksums
-          }
-
-          function Create-Shortcut($target, $name) {
-              $desktop = [Environment]::GetFolderPath("Desktop")
-              $path = "$desktop\$name.lnk"
-              $shell = New-Object -ComObject WScript.Shell
-              if (Test-Path $target) {
-                  $s = $shell.CreateShortcut($path)
-                  $s.TargetPath = $target
-                  $s.Save()
-              }
           }
 
           # 1. تثبيت Chocolatey (للتأكد)
@@ -185,31 +177,28 @@ jobs:
           Install-Choco "vscode"
           Install-Choco "notepadplusplus"
           Install-Choco "github-desktop"
-
-          # 4. تثبيت Node.js (تثبيت مباشر بدون NVM لتجنب التعليق)
-          Write-Host "📦 Installing Node.js 20..." -ForegroundColor Cyan
+          
+          # 4. أدوات متقدمة
+          Install-Choco "bruno"
+          
+          # Windsurf غير متوفر في Choco الرسمي حالياً، نحاول تثبيته إذا وجد، أو نتجاهل
+          # يمكنك إضافة رابط تحميل مباشر هنا إذا توفر مستقبلاً
+          
+          # 5. تثبيت Node.js (تثبيت مباشر)
+          Write-Host "Installing Node.js 20..." -ForegroundColor Cyan
           Install-Choco "nodejs --version 20.15.1"
-          # تحديث المسار
           $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
           npm install -g yarn pnpm
 
-          # 5. برامج متقدمة (Bruno, Windsurf, Antigravity)
-          Install-Choco "bruno"
-          Install-Choco "antigravity" # قد يفشل إذا لم يكن في المستودع العام
-          
-          # محاولة Windsurf (غالباً غير موجود في Choco العام، محاولة Winget كبديل أو التجاوز)
-          # سنحاول تثبيت winget wrapper إذا لزم الأمر
-          
           # 6. WSL 2 و Docker
-          Write-Host "🧠 Enabling WSL2 Features..." -ForegroundColor Cyan
+          Write-Host "Enabling WSL2 Features..." -ForegroundColor Cyan
           dism.exe /online /enable-feature /featurename:Microsoft-Windows-Subsystem-Linux /all /norestart
           dism.exe /online /enable-feature /featurename:VirtualMachinePlatform /all /norestart
           
-          Write-Host "🐳 Installing Docker Desktop..." -ForegroundColor Cyan
+          Write-Host "Installing Docker Desktop..." -ForegroundColor Cyan
           Install-Choco "docker-desktop"
 
-          Write-Host "✅ All Installations Completed!" -ForegroundColor Green
-          Write-Host "ℹ️  Note: Docker and WSL usually require a reboot to fully function." -ForegroundColor Yellow
+          Write-Host "✅ All Background Installations Completed!" -ForegroundColor Green
           '@
 
           # حفظ وتشغيل السكريبت في الخلفية
