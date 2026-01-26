@@ -1,0 +1,233 @@
+name: RDP-Tailscale
+
+on:
+  workflow_dispatch:
+    inputs:
+      runs-on:
+        description: "Select Operating System"
+        type: choice
+        default: windows-latest
+        options:
+          - windows-latest # Windows 11 / Server 2022
+          - windows-2019   # Windows 10 / Server 2019
+          - ubuntu-24.04
+      
+      rdp_username:
+        description: "User Name"
+        default: "AdminUser"
+        required: true
+
+      rdp_password:
+        description: "Password"
+        default: "admin_123"
+        required: true
+
+jobs:
+  environment-setup:
+    runs-on: ${{ inputs.runs-on }}
+    timeout-minutes: 216000 # 6 hours max
+
+    steps:
+      # ===============================
+      # 1. إعداد بيانات المستخدم
+      # ===============================
+      - name: Set User Credentials
+        shell: bash
+        run: |
+          echo "USER_NAME=${{ inputs.rdp_username }}" >> $GITHUB_ENV
+          echo "USER_PASS=${{ inputs.rdp_password }}" >> $GITHUB_ENV
+
+      # ===============================
+      # 2. تثبيت Tailscale (Windows & Linux)
+      # ===============================
+      - name: Install Tailscale (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $url = "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi"
+          $output = "$env:TEMP\tailscale.msi"
+          Invoke-WebRequest -Uri $url -OutFile $output
+          Start-Process msiexec.exe -ArgumentList "/i", "`"$output`"", "/quiet", "/norestart" -Wait
+          Remove-Item $output
+
+      - name: Install Tailscale (Linux)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          curl -fsSL https://tailscale.com/install.sh | sh
+
+      # ===============================
+      # 3. إعداد الاتصال عن بعد (RDP for Windows / VNC for Linux)
+      # ===============================
+      - name: Configure RDP & User (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          # تمكين RDP
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 1
+          
+          # فتح الجدار الناري
+          New-NetFirewallRule -DisplayName "Allow RDP" -Direction Inbound -LocalPort 3389 -Protocol TCP -Action Allow -ErrorAction SilentlyContinue
+
+          # إنشاء المستخدم أو تحديثه
+          $pass = ConvertTo-SecureString $env:USER_PASS -AsPlainText -Force
+          $userExists = Get-LocalUser -Name $env:USER_NAME -ErrorAction SilentlyContinue
+          
+          if ($userExists) {
+              Set-LocalUser -Name $env:USER_NAME -Password $pass
+          } else {
+              New-LocalUser -Name $env:USER_NAME -Password $pass -AccountNeverExpires
+          }
+          
+          # إضافة للصلاحيات
+          Add-LocalGroupMember -Group "Administrators" -Member $env:USER_NAME
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member $env:USER_NAME
+
+      - name: Configure VNC & Desktop (Linux)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          sudo apt update
+          sudo apt install -y ubuntu-desktop-minimal tigervnc-standalone-server gnome-session gdm3
+          
+          # إنشاء المستخدم
+          sudo useradd -m -s /bin/bash $USER_NAME
+          echo "$USER_NAME:$USER_PASS" | sudo chpasswd
+          sudo usermod -aG sudo $USER_NAME
+
+          # إعداد VNC
+          mkdir -p /home/$USER_NAME/.vnc
+          echo "$USER_PASS" | vncpasswd -f > /home/$USER_NAME/.vnc/passwd
+          chmod 600 /home/$USER_NAME/.vnc/passwd
+          chown -R $USER_NAME:$USER_NAME /home/$USER_NAME/.vnc
+          
+          # ملف التشغيل
+          echo '#!/bin/sh
+          unset SESSION_MANAGER
+          unset DBUS_SESSION_BUS_ADDRESS
+          exec gnome-session &' > /home/$USER_NAME/.vnc/xstartup
+          chmod +x /home/$USER_NAME/.vnc/xstartup
+          
+          # تشغيل السيرفر
+          sudo -u $USER_NAME vncserver :1 -geometry 1280x720 -depth 24
+
+      # ===============================
+      # 4. تشغيل سكريبت التثبيت الآلي (Windows Only)
+      # ===============================
+      - name: Run Auto-Setup Script (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          # كتابة السكريبت إلى ملف
+          $scriptContent = @'
+          $ErrorActionPreference = "Continue" # Changed to continue to avoid full stop on minor errors
+
+          function Wait-Step($sec = 2) { Write-Host "⏳ Waiting $sec seconds..." -ForegroundColor Yellow; Start-Sleep -Seconds $sec }
+          function New-DesktopShortcut {
+              param([string]$TargetPath, [string]$ShortcutName)
+              $desktop = [Environment]::GetFolderPath("Desktop")
+              $shortcut = (New-Object -ComObject WScript.Shell).CreateShortcut(("$desktop\$ShortcutName.lnk"))
+              $shortcut.TargetPath = $TargetPath
+              $shortcut.Save()
+          }
+          function Reinstall-ChocoPackage($packageName) {
+              Write-Host "Installing $packageName..." -ForegroundColor Cyan
+              choco install $packageName -y --force --no-progress
+          }
+
+          # 1. Chocolatey Check (Usually installed on GitHub Runners)
+          if (-not (Get-Command choco -ErrorAction SilentlyContinue)) {
+              Set-ExecutionPolicy Bypass -Scope Process -Force
+              [System.Net.ServicePointManager]::SecurityProtocol = 3072
+              Invoke-Expression ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
+          }
+
+          # 2. Browsers
+          Reinstall-ChocoPackage "firefox"
+          Reinstall-ChocoPackage "googlechrome"
+
+          # 3. Git
+          Reinstall-ChocoPackage "git"
+
+          # 4. Node via NVM
+          Reinstall-ChocoPackage "nvm"
+          # Refresh Environment for NVM to work without restart
+          $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+          
+          Write-Host "Installing Node 20.15.1..."
+          nvm install 20.15.1
+          nvm use 20.15.1
+          
+          # 5. Yarn & PNPM
+          npm install -g yarn pnpm
+
+          # 6. Editors
+          Reinstall-ChocoPackage "vscode"
+          Reinstall-ChocoPackage "notepadplusplus"
+          
+          # 7. GitHub Desktop
+          Reinstall-ChocoPackage "github-desktop"
+          $ghPath = "$env:LOCALAPPDATA\GitHubDesktop\GitHubDesktop.exe"
+          if (Test-Path $ghPath) { New-DesktopShortcut -TargetPath $ghPath -ShortcutName "GitHub Desktop" }
+
+          # 8. WSL (Simplified for CI)
+          dism.exe /online /enable-feature /featurename:Microsoft-Windows-Subsystem-Linux /all /norestart
+          dism.exe /online /enable-feature /featurename:VirtualMachinePlatform /all /norestart
+          
+          # 9. Docker
+          Reinstall-ChocoPackage "docker-desktop"
+
+          Write-Host "🎉 Setup Script Completed Successfully!" -ForegroundColor Green
+          '@
+
+          # حفظ وتشغيل السكريبت
+          $scriptContent | Out-File -FilePath "setup_env.ps1" -Encoding UTF8
+          & .\setup_env.ps1
+
+      # ===============================
+      # 5. الاتصال بـ Tailscale والتشغيل المستمر
+      # ===============================
+      - name: Connect to Tailscale
+        id: tailscale_up
+        shell: bash
+        env:
+          TS_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
+        run: |
+          if [ -z "$TS_KEY" ]; then
+            echo "::error::TAILSCALE_AUTH_KEY is missing via Secrets!"
+            exit 1
+          fi
+
+          HOSTNAME="gh-runner-${{ github.run_id }}"
+          
+          if [ "$RUNNER_OS" == "Windows" ]; then
+             "/c/Program Files/Tailscale/tailscale.exe" up --authkey=$TS_KEY --hostname=$HOSTNAME --accept-routes --ssh
+             IP=$("/c/Program Files/Tailscale/tailscale.exe" ip -4)
+          else
+             sudo tailscale up --authkey=$TS_KEY --hostname=$HOSTNAME --accept-routes --ssh
+             IP=$(tailscale ip -4)
+          fi
+          
+          echo "TS_IP=$IP" >> $GITHUB_OUTPUT
+          echo "Tailscale IP is: $IP"
+
+      - name: Display Connection Info
+        run: |
+          echo "============================================="
+          echo "   ✅ Machine Ready"
+          echo "============================================="
+          echo "OS: ${{ inputs.runs-on }}"
+          echo "Tailscale IP: ${{ steps.tailscale_up.outputs.TS_IP }}"
+          echo "Username: ${{ inputs.rdp_username }}"
+          echo "Password: ${{ inputs.rdp_password }}"
+          echo "============================================="
+          echo "Connect using RDP (Windows) or VNC (Linux port 5901)"
+
+      - name: Keep Alive Loop
+        shell: pwsh
+        run: |
+          Write-Host "Session is active. Press Cancel workflow to stop."
+          while ($true) {
+            Start-Sleep -Seconds 60
+          }
