@@ -14,7 +14,7 @@ on:
       
       rdp_username:
         description: "User Name"
-        default: "AdminUser"
+        default: "root"
         required: true
 
       rdp_password:
