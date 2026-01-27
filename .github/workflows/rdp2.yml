@@ -141,76 +141,8 @@ jobs:
           echo "⚠️  Software installation is running in the BACKGROUND."
           echo "⚠️  You can connect immediately. Icons will appear as they install."
           echo "=========================================================="
-
       # ===============================
-      # 6. تشغيل سكريبت التثبيت (في الخلفية)
-      # ===============================
-      - name: Run Auto-Setup Script (Background)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $scriptContent = @'
-          # ==========================================
-          # BACKGROUND INSTALLATION SCRIPT
-          # ==========================================
-          $ErrorActionPreference = "Continue"
-
-          function Install-Choco($pkg) {
-              Write-Host "Installing $pkg..." -ForegroundColor Cyan
-              # --ignore-checksums added to avoid hash mismatch errors
-              choco install $pkg -y --force --no-progress --ignore-checksums
-          }
-
-          # 1. تثبيت Chocolatey (للتأكد)
-          if (-not (Get-Command choco -ErrorAction SilentlyContinue)) {
-              Set-ExecutionPolicy Bypass -Scope Process -Force
-              [System.Net.ServicePointManager]::SecurityProtocol = 3072
-              Invoke-Expression ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
-          }
-
-          # 2. المتصفحات
-          Install-Choco "firefox"
-          Install-Choco "googlechrome"
-
-          # 3. أدوات التطوير الأساسية
-          Install-Choco "git"
-          Install-Choco "vscode"
-          Install-Choco "notepadplusplus"
-          Install-Choco "github-desktop"
-          
-          # 4. أدوات متقدمة
-          Install-Choco "bruno"
-          
-          # Windsurf غير متوفر في Choco الرسمي حالياً، نحاول تثبيته إذا وجد، أو نتجاهل
-          # يمكنك إضافة رابط تحميل مباشر هنا إذا توفر مستقبلاً
-          
-          # 5. تثبيت Node.js (تثبيت مباشر)
-          Write-Host "Installing Node.js 20..." -ForegroundColor Cyan
-          Install-Choco "nodejs --version 20.15.1"
-          $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
-          npm install -g yarn pnpm
-
-          # 6. WSL 2 و Docker
-          Write-Host "Enabling WSL2 Features..." -ForegroundColor Cyan
-          dism.exe /online /enable-feature /featurename:Microsoft-Windows-Subsystem-Linux /all /norestart
-          dism.exe /online /enable-feature /featurename:VirtualMachinePlatform /all /norestart
-          
-          Write-Host "Installing Docker Desktop..." -ForegroundColor Cyan
-          Install-Choco "docker-desktop"
-
-          Write-Host "✅ All Background Installations Completed!" -ForegroundColor Green
-          '@
-
-          # حفظ وتشغيل السكريبت في الخلفية
-          $scriptContent | Out-File -FilePath "C:\setup_full.ps1" -Encoding UTF8
-          
-          Write-Host "🚀 Launching background installer..."
-          Start-Process powershell.exe -ArgumentList "-ExecutionPolicy Bypass -File C:\setup_full.ps1" -WindowStyle Hidden
-          
-          Write-Host "Installer running. Enjoy your session!"
-
-      # ===============================
-      # 7. الحلقة النهائية (Keep Alive)
+      # 6. الحلقة النهائية (Keep Alive)
       # ===============================
       - name: Keep Session Alive
         shell: pwsh
